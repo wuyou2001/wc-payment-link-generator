@@ -1681,45 +1681,7 @@ function generate_payment_link_page()
             wp_unslash($_POST['wplpg_checkout_slug'] ?? '')
         );
 
-    if (
-        isset($_POST['wplpg_save_github_repo']) &&
-        check_admin_referer('wplpg_save_github_repo')
-    ) {
-        $new_repo = sanitize_text_field(wp_unslash($_POST['wplpg_github_repo'] ?? ''));
-        update_option('wplpg_github_repo', $new_repo);
-        delete_site_transient('update_plugins');
-        delete_transient('wplpg_gh_release_' . md5($new_repo));
-        echo '<div class="notice notice-success is-dismissible"><p>' .
-            esc_html('GitHub 仓库设置已保存，并已刷新更新缓存。') .
-            '</p></div>';
-    }
 
-    if (
-        isset($_POST['wplpg_check_update_now']) &&
-        check_admin_referer('wplpg_check_update_now')
-    ) {
-        $updater = wplpg_get_updater_instance();
-        delete_site_transient('update_plugins');
-        $repo = $updater->get_github_repo();
-        delete_transient('wplpg_gh_release_' . md5($repo));
-        $release = $updater->get_release_info(true);
-        if ($release) {
-            $latest_v = ltrim($release['tag_name'] ?? '', 'vV');
-            if (version_compare($latest_v, '2.0.1', '>')) {
-                echo '<div class="notice notice-warning is-dismissible"><p>' .
-                    sprintf(esc_html('检测到 GitHub 仓库最新版本为 v%s（当前为 v2.0.1）！请前往“已安装插件”或“控制板 → 更新”一键更新。'), esc_html($latest_v)) .
-                    '</p></div>';
-            } else {
-                echo '<div class="notice notice-success is-dismissible"><p>' .
-                    sprintf(esc_html('当前插件版本 (v2.0.1) 已是 GitHub 仓库最新版本 (v%s)。'), esc_html($latest_v)) .
-                    '</p></div>';
-            }
-        } else {
-            echo '<div class="notice notice-info is-dismissible"><p>' .
-                esc_html('GitHub 仓库尚未发布 Release，或当前网络访问 GitHub API 繁忙。发布 Release 后站点即可自动收到更新提示。') .
-                '</p></div>';
-        }
-    }
         if (
             $checkout_page_id > 0 &&
             $new_slug &&
@@ -1953,55 +1915,7 @@ function generate_payment_link_page()
                 </div>
             </aside>
 
-            <aside class="wplpg-card" style="margin-top: 24px;">
-                <div class="wplpg-card-header">
-                    <h2>自动更新设置 (GitHub)</h2>
-                    <p>通过 GitHub Releases 实现全网已安装站点一键自动升级。</p>
-                </div>
 
-                <div class="wplpg-card-body">
-                    <form method="post" style="margin-bottom: 16px;">
-                        <?php wp_nonce_field('wplpg_save_github_repo'); ?>
-
-                        <div class="wplpg-field">
-                            <label for="wplpg-github-repo">
-                                GitHub 仓库路径 (owner/repo)
-                            </label>
-                            <input
-                                type="text"
-                                id="wplpg-github-repo"
-                                name="wplpg_github_repo"
-                                value="<?php echo esc_attr(get_option('wplpg_github_repo', 'wuyou2001/wc-payment-link-generator')); ?>"
-                                placeholder="wuyou2001/wc-payment-link-generator"
-                                required>
-                            <p class="wplpg-help">
-                                默认绑定您的公开仓库。发布新 Release 后，所有站点后台将自动提示更新。
-                            </p>
-                        </div>
-
-                        <button
-                            type="submit"
-                            name="wplpg_save_github_repo"
-                            class="button">
-                            保存仓库路径
-                        </button>
-                    </form>
-
-                    <form method="post">
-                        <?php wp_nonce_field('wplpg_check_update_now'); ?>
-                        <div class="wplpg-info" style="margin-bottom: 12px;">
-                            <strong>当前插件版本</strong>
-                            <code>v2.0.1</code>
-                        </div>
-                        <button
-                            type="submit"
-                            name="wplpg_check_update_now"
-                            class="button button-secondary">
-                            立即检查 GitHub 更新
-                        </button>
-                    </form>
-                </div>
-            </aside>
         </div>
     </div>
 
