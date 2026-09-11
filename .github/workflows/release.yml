@@ -1,0 +1,44 @@
+name: Build and Release WordPress Plugin
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Prepare Plugin Package
+        run: |
+          # 自动识别插件目录名称
+          PLUGIN_DIR=$(find . -maxdepth 1 -mindepth 1 -type d ! -name ".*" ! -name "includes" ! -name "scripts" | head -n 1 | sed 's|^\./||')
+          if [ -z "$PLUGIN_DIR" ]; then
+            PLUGIN_DIR="${GITHUB_REPOSITORY##*/}"
+          fi
+          echo "Found plugin dir: $PLUGIN_DIR"
+          
+          # 创建纯净标准安装包
+          zip -q -r "${PLUGIN_DIR}.zip" "$PLUGIN_DIR"
+          echo "ZIP_NAME=${PLUGIN_DIR}.zip" >> $GITHUB_ENV
+          echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+
+      - name: Create Official GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release ${{ env.TAG_NAME }}
+          body: |
+            ## 🚀 WordPress 插件自动构建发行版
+            
+            - **版本号**：${{ env.TAG_NAME }}
+            - **自动更新支持**：已安装旧版的 WordPress 站点将在后台自动收到更新提示，并支持一键在线升级。
+          files: |
+            ${{ env.ZIP_NAME }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

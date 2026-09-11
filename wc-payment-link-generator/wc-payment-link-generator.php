@@ -3,7 +3,7 @@
 /**
  * Plugin Name: WooCommerce 付款链接生成器
  * Description: 在 WooCommerce 后台生成自定义金额付款链接，支持设置有效期限、变体产品自动补齐属性、可自主选择保留页面内容（产品信息、账单地址、页首页脚、隐私政策），支持跳过订单验证与纯净结账模式，完美兼容移动端与所有主题，支持 GitHub Releases 一键自动升级更新。
- * Version: 2.0.3
+ * Version: 2.0.4
  * Author: Wwnine
  */
 
