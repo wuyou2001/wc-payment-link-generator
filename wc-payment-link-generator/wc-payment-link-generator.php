@@ -1486,28 +1486,53 @@ class WPLPG_Plugin_Updater
         }
 
         $repo = $this->get_github_repo();
-        $api_url = 'https://api.github.com/repos/' . $repo . '/releases/latest';
-
-        $response = wp_remote_get($api_url, [
+        $headers = [
             'timeout'    => 10,
             'user-agent' => 'WordPress/' . get_bloginfo('version') . '; ' . home_url(),
             'headers'    => [
                 'Accept' => 'application/vnd.github.v3+json',
             ],
-        ]);
+        ];
 
-        if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
-            return false;
+        // 1. 优先请求 GitHub Releases
+        $api_url = 'https://api.github.com/repos/' . $repo . '/releases/latest';
+        $response = wp_remote_get($api_url, $headers);
+
+        if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
+            $data = json_decode(wp_remote_retrieve_body($response), true);
+            if (is_array($data) && !empty($data['tag_name'])) {
+                set_transient($transient_key, $data, 12 * HOUR_IN_SECONDS);
+                return $data;
+            }
         }
 
-        $body = wp_remote_retrieve_body($response);
-        $data = json_decode($body, true);
-        if (!is_array($data) || empty($data['tag_name'])) {
-            return false;
+        // 2. 兜底容错：若未创建正式 Release 页面，自动读取最新的 Git Tag 触发更新
+        $tags_url = 'https://api.github.com/repos/' . $repo . '/tags';
+        $tags_response = wp_remote_get($tags_url, $headers);
+
+        if (!is_wp_error($tags_response) && wp_remote_retrieve_response_code($tags_response) === 200) {
+            $tags_data = json_decode(wp_remote_retrieve_body($tags_response), true);
+            if (is_array($tags_data) && !empty($tags_data[0]['name'])) {
+                $latest_tag = $tags_data[0];
+                $data = [
+                    'tag_name'     => $latest_tag['name'],
+                    'html_url'     => 'https://github.com/' . $repo . '/releases/tag/' . rawurlencode($latest_tag['name']),
+                    'body'         => '版本 ' . $latest_tag['name'] . ' 更新（包含最新性能优化与修复）。',
+                    'zipball_url'  => $latest_tag['zipball_url'] ?? ('https://github.com/' . $repo . '/raw/main/%E8%87%AA%E5%AE%9A%E4%B9%89%E4%BB%B7%E6%A0%BC%E4%BB%98%E6%AC%BE%E9%93%BE%E6%8E%A5-%E7%9F%AD%E9%93%BE%E6%8E%A5%E7%89%88.zip'),
+                    'assets'       => [
+                        [
+                            'name' => '自定义价格付款链接-短链接版.zip',
+                            'browser_download_url' => 'https://github.com/' . $repo . '/raw/' . rawurlencode($latest_tag['name']) . '/%E8%87%AA%E5%AE%9A%E4%B9%89%E4%BB%B7%E6%A0%BC%E4%BB%98%E6%AC%BE%E9%93%BE%E6%8E%A5-%E7%9F%AD%E9%93%BE%E6%8E%A5%E7%89%88.zip',
+                        ]
+                    ],
+                    'published_at' => gmdate('Y-m-d H:i:s'),
+                ];
+                set_transient($transient_key, $data, 12 * HOUR_IN_SECONDS);
+                return $data;
+            }
         }
 
-        set_transient($transient_key, $data, 12 * HOUR_IN_SECONDS);
-        return $data;
+        return false;
     }
 
     public function check_update($transient)
