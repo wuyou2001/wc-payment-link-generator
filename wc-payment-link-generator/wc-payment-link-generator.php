@@ -1466,6 +1466,7 @@ class WPLPG_Plugin_Updater
 
         add_filter('pre_set_site_transient_update_plugins', [$this, 'check_update']);
         add_filter('plugins_api', [$this, 'plugin_popup'], 20, 3);
+        add_filter('upgrader_source_selection', [$this, 'source_selection'], 10, 4);
         add_filter('upgrader_post_install', [$this, 'post_install'], 10, 3);
     }
 
@@ -1518,11 +1519,15 @@ class WPLPG_Plugin_Updater
                     'tag_name'     => $latest_tag['name'],
                     'html_url'     => 'https://github.com/' . $repo . '/releases/tag/' . rawurlencode($latest_tag['name']),
                     'body'         => '版本 ' . $latest_tag['name'] . ' 更新（包含最新性能优化与修复）。',
-                    'zipball_url'  => $latest_tag['zipball_url'] ?? ('https://github.com/' . $repo . '/raw/main/%E8%87%AA%E5%AE%9A%E4%B9%89%E4%BB%B7%E6%A0%BC%E4%BB%98%E6%AC%BE%E9%93%BE%E6%8E%A5-%E7%9F%AD%E9%93%BE%E6%8E%A5%E7%89%88.zip'),
+                    'zipball_url'  => 'https://raw.githubusercontent.com/' . $repo . '/' . rawurlencode($latest_tag['name']) . '/wc-payment-link-generator.zip',
                     'assets'       => [
                         [
-                            'name' => '自定义价格付款链接-短链接版.zip',
-                            'browser_download_url' => 'https://github.com/' . $repo . '/raw/' . rawurlencode($latest_tag['name']) . '/%E8%87%AA%E5%AE%9A%E4%B9%89%E4%BB%B7%E6%A0%BC%E4%BB%98%E6%AC%BE%E9%93%BE%E6%8E%A5-%E7%9F%AD%E9%93%BE%E6%8E%A5%E7%89%88.zip',
+                            'name' => 'wc-payment-link-generator.zip',
+                            'browser_download_url' => 'https://raw.githubusercontent.com/' . $repo . '/' . rawurlencode($latest_tag['name']) . '/wc-payment-link-generator.zip',
+                        ],
+                        [
+                            'name' => 'package.zip',
+                            'browser_download_url' => 'https://raw.githubusercontent.com/' . $repo . '/main/wc-payment-link-generator.zip',
                         ]
                     ],
                     'published_at' => gmdate('Y-m-d H:i:s'),
@@ -1618,6 +1623,33 @@ class WPLPG_Plugin_Updater
         return $res;
     }
 
+    /**
+     * 自动校验与校正解压目录（防止 GitHub zip 嵌套子文件夹或目录名不匹配导致安装失败）。
+     */
+    public function source_selection($source, $remote_source, $upgrader, $hook_extra = [])
+    {
+        global $wp_filesystem;
+
+        if (empty($hook_extra['plugin']) || $hook_extra['plugin'] !== $this->plugin_basename) {
+            return $source;
+        }
+
+        // 如果解压目录里嵌套了 wc-payment-link-generator 目录，提升该子目录
+        $nested_dir = trailingslashit($source) . $this->slug;
+        if ($wp_filesystem->is_dir($nested_dir)) {
+            return trailingslashit($nested_dir);
+        }
+
+        // 纠偏解压根目录为插件标准 slug 目录名
+        $corrected_source = trailingslashit($remote_source) . $this->slug . '/';
+        if ($source !== $corrected_source) {
+            $wp_filesystem->move($source, $corrected_source);
+            return $corrected_source;
+        }
+
+        return $source;
+    }
+
     public function post_install($true, $hook_extra, $result)
     {
         global $wp_filesystem;
@@ -1626,9 +1658,11 @@ class WPLPG_Plugin_Updater
             return $result;
         }
 
-        $proper_destination = WP_PLUGIN_DIR . '/' . $this->slug;
-        $wp_filesystem->move($result['destination'], $proper_destination);
-        $result['destination'] = $proper_destination;
+        $proper_destination = trailingslashit(WP_PLUGIN_DIR) . $this->slug;
+        if (trailingslashit($result['destination']) !== trailingslashit($proper_destination)) {
+            $wp_filesystem->move($result['destination'], $proper_destination, true);
+            $result['destination'] = $proper_destination;
+        }
 
         activate_plugin($this->plugin_basename);
         return $result;
