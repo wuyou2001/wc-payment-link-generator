@@ -3,7 +3,7 @@
 /**
  * Plugin Name: WooCommerce 付款链接生成器
  * Description: 在 WooCommerce 后台生成自定义金额付款链接，支持设置有效期限、变体产品自动补齐属性、可自主选择保留页面内容（产品信息、账单地址、页首页脚、隐私政策），支持跳过订单验证与纯净结账模式，完美兼容移动端与所有主题，支持 GitHub Releases 一键自动升级更新。
- * Version: 2.0.2
+ * Version: 2.0.3
  * Author: Wwnine
  */
 
@@ -1450,7 +1450,7 @@ class WPLPG_Plugin_Updater
     protected $version;
     protected $github_repo;
 
-    public function __construct($plugin_file, $version, $github_repo = 'wuyou2001/wc-payment-link-generator')
+    public function __construct($plugin_file, $version = '', $github_repo = 'wuyou2001/wc-payment-link-generator')
     {
         $this->plugin_file = $plugin_file;
         $this->plugin_basename = plugin_basename($plugin_file);
@@ -1458,7 +1458,22 @@ class WPLPG_Plugin_Updater
         if ($this->slug === '.' || empty($this->slug)) {
             $this->slug = 'wc-payment-link-generator';
         }
-        $this->version = $version;
+
+        // 单点真实源：自动从主文件头动态解析版本号，杜绝版本号不一致
+        if (empty($version)) {
+            if (function_exists('get_file_data')) {
+                $file_data = get_file_data($plugin_file, ['Version' => 'Version']);
+                $version = !empty($file_data['Version']) ? $file_data['Version'] : '1.0.0';
+            } else {
+                $content = @file_get_contents($plugin_file, false, null, 0, 8192);
+                if ($content && preg_match('/^[ 	\/*#@]*Version:(.*)$/mi', $content, $match)) {
+                    $version = trim($match[1]);
+                } else {
+                    $version = '1.0.0';
+                }
+            }
+        }
+        $this->version = ltrim($version, 'vV');
         $this->github_repo = trim((string) get_option('wplpg_github_repo', $github_repo));
         if (empty($this->github_repo)) {
             $this->github_repo = $github_repo;
@@ -1676,7 +1691,7 @@ function wplpg_get_updater_instance()
 {
     static $instance = null;
     if ($instance === null) {
-        $instance = new WPLPG_Plugin_Updater(__FILE__, '2.0.2', 'wuyou2001/wc-payment-link-generator');
+        $instance = new WPLPG_Plugin_Updater(__FILE__, '', 'wuyou2001/wc-payment-link-generator');
     }
     return $instance;
 }
