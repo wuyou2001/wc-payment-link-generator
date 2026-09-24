@@ -3,7 +3,7 @@
 /**
  * Plugin Name: WooCommerce 付款链接生成器
  * Description: 在 WooCommerce 后台生成自定义金额付款链接，支持设置有效期限、变体产品自动补齐属性、可自主选择保留页面内容（产品信息、账单地址、页首页脚、隐私政策），支持跳过订单验证与纯净结账模式，完美兼容移动端与所有主题，支持 GitHub Releases 一键自动升级更新。
- * Version: 2.0.5
+ * Version: 2.0.6
  * Author: Wwnine
  */
 
@@ -803,47 +803,113 @@ function wplpg_render_pure_checkout_assets()
         }
         <?php endif; ?>
 
-        /* 6. 纯支付模式全局页面容器居中美化 */
+        /* 6. 隐藏所有主题的残留悬浮组件（滚动置顶、移动端侧滑菜单、吸顶栏、主题移动端工具条等） */
+        .scrollToTop,
+        .mobile-nav,
+        .wd-toolbar,
+        .woodmart-toolbar,
+        .wd-side-hidden,
+        .woodmart-sticky-toolbar,
+        .whb-clone,
+        .ast-mobile-header-wrap,
+        .elementor-menu-cart__container,
+        .storefront-handheld-footer-bar {
+            display: none !important;
+            visibility: hidden !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
+        }
+
+        /* 7. 纯支付模式全局页面容器居中美化（解决各类主题高度限制与左右挤压） */
         body {
             background-color: #f8fafc !important;
             margin: 0 !important;
             padding: 0 !important;
+            min-height: 100vh !important;
+            display: flex !important;
+            flex-direction: column !important;
+            justify-content: center !important;
+            align-items: center !important;
         }
 
+        .website-wrapper,
+        .wd-page-wrapper,
         .wp-site-blocks,
         .site-content,
         .main-page-wrapper,
         #main,
         .content-area,
+        .content-layout-wrapper,
         main {
             display: flex !important;
             flex-direction: column !important;
             justify-content: center !important;
             align-items: center !important;
-            min-height: 100vh !important;
-            padding: 30px 15px !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            margin: 0 auto !important;
+            padding: 24px 16px !important;
             box-sizing: border-box !important;
             background: transparent !important;
+            border: none !important;
         }
 
         .entry-content,
-        .woocommerce,
-        form.woocommerce-checkout {
+        .woocommerce {
             width: 100% !important;
-            max-width: <?php echo $retain_billing ? '1000px' : '560px'; ?> !important;
+            max-width: <?php echo $retain_billing ? '1000px' : '520px'; ?> !important;
             margin: 0 auto !important;
+            padding: 0 !important;
             float: none !important;
+            box-sizing: border-box !important;
         }
 
+        /* 根除各主题表单自带的双列 Flex / Float 样式限制，解决卡片被压缩变窄问题 */
+        form.woocommerce-checkout {
+            display: flex !important;
+            flex-direction: <?php echo $retain_billing ? 'row' : 'column'; ?> !important;
+            flex-wrap: wrap !important;
+            gap: 24px !important;
+            width: 100% !important;
+            max-width: <?php echo $retain_billing ? '1000px' : '520px'; ?> !important;
+            margin: 0 auto !important;
+            float: none !important;
+            box-sizing: border-box !important;
+        }
+
+        form.woocommerce-checkout .checkout-order-review,
+        form.woocommerce-checkout .woocommerce-checkout-review-order {
+            width: 100% !important;
+            max-width: 100% !important;
+            flex: 1 1 100% !important;
+            float: none !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            box-sizing: border-box !important;
+        }
+
+        <?php if ($retain_billing): ?>
+        form.woocommerce-checkout #customer_details {
+            flex: 1 1 480px !important;
+            max-width: 100% !important;
+        }
+        form.woocommerce-checkout .checkout-order-review {
+            flex: 1 1 420px !important;
+            max-width: 100% !important;
+        }
+        <?php endif; ?>
+
+        /* 订单审核与支付卡片精雕美化 */
         #order_review {
             width: 100% !important;
+            max-width: 100% !important;
             float: none !important;
-            border: 1px solid #e2e8f0;
-            border-radius: 14px;
-            padding: 24px;
-            background: #ffffff;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
-            box-sizing: border-box;
+            border: 1px solid #e2e8f0 !important;
+            border-radius: 16px !important;
+            padding: 30px !important;
+            background: #ffffff !important;
+            box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.06), 0 8px 10px -6px rgba(15, 23, 42, 0.04) !important;
+            box-sizing: border-box !important;
         }
 
         #payment {
@@ -856,46 +922,130 @@ function wplpg_render_pure_checkout_assets()
         #payment ul.payment_methods {
             border: none !important;
             padding: 0 !important;
+            margin: 0 0 18px 0 !important;
         }
 
-        /* 顶部支付金额卡片 */
+        #payment ul.payment_methods li {
+            padding: 14px 16px !important;
+            margin-bottom: 12px !important;
+            border: 1.5px solid #e2e8f0 !important;
+            border-radius: 12px !important;
+            background: #ffffff !important;
+            list-style: none !important;
+            transition: all 0.2s ease !important;
+            display: flex !important;
+            flex-wrap: wrap !important;
+            align-items: center !important;
+            gap: 8px !important;
+        }
+
+        #payment ul.payment_methods li input[type="radio"] {
+            margin: 0 6px 0 0 !important;
+            transform: scale(1.1) !important;
+            cursor: pointer !important;
+        }
+
+        #payment ul.payment_methods li label {
+            font-size: 15px !important;
+            font-weight: 600 !important;
+            color: #1e293b !important;
+            cursor: pointer !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            gap: 6px !important;
+            margin: 0 !important;
+        }
+
+        #payment ul.payment_methods li:has(input:checked),
+        #payment ul.payment_methods li.payment_method_handypaygateway,
+        #payment ul.payment_methods li.is-selected {
+            border-color: #2563eb !important;
+            background: #f8faff !important;
+            box-shadow: 0 0 0 1px #2563eb !important;
+        }
+
+        #payment div.payment_box {
+            width: 100% !important;
+            margin: 10px 0 0 0 !important;
+            padding: 12px 14px !important;
+            background: #f1f5f9 !important;
+            border-radius: 8px !important;
+            font-size: 13px !important;
+            color: #475569 !important;
+            line-height: 1.5 !important;
+        }
+
+        #payment div.payment_box::before {
+            display: none !important;
+        }
+
+        /* 提交订单按钮全宽与交互质感 */
+        #place_order {
+            width: 100% !important;
+            min-height: 50px !important;
+            font-size: 16px !important;
+            font-weight: 600 !important;
+            letter-spacing: 0.3px !important;
+            border-radius: 12px !important;
+            margin-top: 10px !important;
+            padding: 12px 20px !important;
+            cursor: pointer !important;
+            transition: all 0.2s ease !important;
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2) !important;
+        }
+
+        /* 顶部支付金额卡片（极具质感与跨端统一） */
         .wplpg-payment-amount-banner {
-            background: #f8fafc;
-            border: 1px solid #e2e8f0;
-            border-radius: 10px;
-            padding: 16px 20px;
-            margin-bottom: 22px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+            background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%) !important;
+            border: 1px solid #e2e8f0 !important;
+            border-radius: 12px !important;
+            padding: 18px 22px !important;
+            margin-bottom: 24px !important;
+            display: flex !important;
+            justify-content: space-between !important;
+            align-items: center !important;
+            box-sizing: border-box !important;
         }
 
         .wplpg-payment-amount-banner .wplpg-banner-label {
-            font-size: 15px;
-            color: #475569;
-            font-weight: 600;
+            font-size: 15px !important;
+            color: #64748b !important;
+            font-weight: 600 !important;
+            text-transform: uppercase !important;
+            letter-spacing: 0.5px !important;
         }
 
         .wplpg-payment-amount-banner .wplpg-banner-amount {
-            font-size: 24px;
-            color: #0f172a;
-            font-weight: 700;
+            font-size: 26px !important;
+            color: #0f172a !important;
+            font-weight: 800 !important;
+            line-height: 1 !important;
         }
 
         @media (max-width: 600px) {
+            body {
+                padding: 12px 8px !important;
+            }
+            .website-wrapper,
+            .wd-page-wrapper,
             .wp-site-blocks,
             .site-content,
             #main {
-                padding: 15px 10px !important;
+                padding: 8px 4px !important;
             }
             #order_review {
-                padding: 18px;
+                padding: 20px 16px !important;
+                border-radius: 14px !important;
             }
             .wplpg-payment-amount-banner {
-                padding: 14px 16px;
+                padding: 14px 16px !important;
+                margin-bottom: 18px !important;
             }
             .wplpg-payment-amount-banner .wplpg-banner-amount {
-                font-size: 20px;
+                font-size: 22px !important;
+            }
+            #payment ul.payment_methods li {
+                padding: 12px 14px !important;
             }
         }
     </style>
