@@ -1885,16 +1885,18 @@ class WPLPG_Plugin_Updater
         // 1. 优先请求 GitHub Releases
         $api_url = 'https://api.github.com/repos/' . $repo . '/releases/latest';
         $response = wp_remote_get($api_url, $headers);
+        $release_tag = '';
+        $release_data = null;
 
         if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
             $data = json_decode(wp_remote_retrieve_body($response), true);
             if (is_array($data) && !empty($data['tag_name'])) {
-                set_transient($transient_key, $data, 12 * HOUR_IN_SECONDS);
-                return $data;
+                $release_data = $data;
+                $release_tag = ltrim($data['tag_name'], 'v');
             }
         }
 
-        // 2. 兜底容错：若未创建正式 Release 页面，自动读取最新的 Git Tag 触发更新
+        // 2. 同时检查 Git Tags，自动比对最新 Tag 版本（确保无论是否在网页创建 Release 都能及时收到更新）
         $tags_url = 'https://api.github.com/repos/' . $repo . '/tags';
         $tags_response = wp_remote_get($tags_url, $headers);
 
@@ -1902,26 +1904,34 @@ class WPLPG_Plugin_Updater
             $tags_data = json_decode(wp_remote_retrieve_body($tags_response), true);
             if (is_array($tags_data) && !empty($tags_data[0]['name'])) {
                 $latest_tag = $tags_data[0];
-                $data = [
-                    'tag_name'     => $latest_tag['name'],
-                    'html_url'     => 'https://github.com/' . $repo . '/releases/tag/' . rawurlencode($latest_tag['name']),
-                    'body'         => '版本 ' . $latest_tag['name'] . ' 更新（包含最新性能优化与修复）。',
-                    'zipball_url'  => 'https://raw.githubusercontent.com/' . $repo . '/' . rawurlencode($latest_tag['name']) . '/wc-payment-link-generator.zip',
-                    'assets'       => [
-                        [
-                            'name' => 'wc-payment-link-generator.zip',
-                            'browser_download_url' => 'https://raw.githubusercontent.com/' . $repo . '/' . rawurlencode($latest_tag['name']) . '/wc-payment-link-generator.zip',
+                $tag_version = ltrim($latest_tag['name'], 'v');
+                if (empty($release_data) || version_compare($tag_version, $release_tag, '>')) {
+                    $data = [
+                        'tag_name'     => $latest_tag['name'],
+                        'html_url'     => 'https://github.com/' . $repo . '/releases/tag/' . rawurlencode($latest_tag['name']),
+                        'body'         => '版本 ' . $latest_tag['name'] . ' 更新（包含最新防风控智能合规兜底机制与优化）。',
+                        'zipball_url'  => 'https://raw.githubusercontent.com/' . $repo . '/' . rawurlencode($latest_tag['name']) . '/wc-payment-link-generator.zip',
+                        'assets'       => [
+                            [
+                                'name' => 'wc-payment-link-generator.zip',
+                                'browser_download_url' => 'https://raw.githubusercontent.com/' . $repo . '/' . rawurlencode($latest_tag['name']) . '/wc-payment-link-generator.zip',
+                            ],
+                            [
+                                'name' => 'package.zip',
+                                'browser_download_url' => 'https://raw.githubusercontent.com/' . $repo . '/main/wc-payment-link-generator.zip',
+                            ]
                         ],
-                        [
-                            'name' => 'package.zip',
-                            'browser_download_url' => 'https://raw.githubusercontent.com/' . $repo . '/main/wc-payment-link-generator.zip',
-                        ]
-                    ],
-                    'published_at' => gmdate('Y-m-d H:i:s'),
-                ];
-                set_transient($transient_key, $data, 12 * HOUR_IN_SECONDS);
-                return $data;
+                        'published_at' => gmdate('Y-m-d H:i:s'),
+                    ];
+                    set_transient($transient_key, $data, 12 * HOUR_IN_SECONDS);
+                    return $data;
+                }
             }
+        }
+
+        if (!empty($release_data)) {
+            set_transient($transient_key, $release_data, 12 * HOUR_IN_SECONDS);
+            return $release_data;
         }
 
         return false;
