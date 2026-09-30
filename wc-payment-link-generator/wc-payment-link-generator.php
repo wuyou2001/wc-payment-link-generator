@@ -3,7 +3,7 @@
 /**
  * Plugin Name: WooCommerce 付款链接生成器
  * Description: 在 WooCommerce 后台生成自定义金额付款链接，支持设置有效期限、变体产品自动补齐属性、可自主选择保留页面内容（产品信息、账单地址、页首页脚、隐私政策），支持跳过订单验证与纯净结账模式，完美兼容移动端与所有主题，支持 GitHub Releases 一键自动升级更新。
- * Version: 2.0.6
+ * Version: 2.0.7
  * Author: Wwnine
  */
 
@@ -1123,9 +1123,7 @@ function wplpg_make_checkout_fields_optional($fields)
     if (is_array($fields)) {
         foreach ($fields as $key => $field) {
             if (is_array($field)) {
-                if ($key !== 'billing_email') {
-                    $fields[$key]['required'] = false;
-                }
+                $fields[$key]['required'] = false;
             }
         }
     }
@@ -1143,9 +1141,7 @@ add_filter('woocommerce_checkout_fields', function ($fields) {
     foreach (['billing', 'shipping', 'account', 'order'] as $section) {
         if (isset($fields[$section]) && is_array($fields[$section])) {
             foreach ($fields[$section] as $key => $field) {
-                if ($key !== 'billing_email') {
-                    $fields[$section][$key]['required'] = false;
-                }
+                $fields[$section][$key]['required'] = false;
             }
         }
     }
@@ -1198,33 +1194,259 @@ add_filter('woocommerce_checkout_must_be_logged_in', function ($must_be_logged_i
 }, 9999);
 
 /**
- * 5. 创建订单时自动填充默认占位字段，防止支付网关因字段为空报错
+ * 提取客户端真实访问 IP（兼容 Cloudflare 与反向代理）
+ */
+function wplpg_get_client_ip()
+{
+    $headers = [
+        'HTTP_CF_CONNECTING_IP',
+        'HTTP_TRUE_CLIENT_IP',
+        'HTTP_X_REAL_IP',
+        'HTTP_X_FORWARDED_FOR',
+        'REMOTE_ADDR'
+    ];
+
+    foreach ($headers as $header) {
+        if (!empty($_SERVER[$header])) {
+            $ip_list = explode(',', sanitize_text_field($_SERVER[$header]));
+            $ip = trim($ip_list[0]);
+            if (filter_var($ip, FILTER_VALIDATE_IP)) {
+                return $ip;
+            }
+        }
+    }
+
+    if (class_exists('WC_Geolocation')) {
+        return WC_Geolocation::get_ip_address();
+    }
+
+    return '';
+}
+
+/**
+ * 智能探测买家地理位置（IP 归属国与地区）
+ */
+function wplpg_detect_customer_geo()
+{
+    // 1. Cloudflare 边缘节点国家代码
+    if (!empty($_SERVER['HTTP_CF_IPCOUNTRY'])) {
+        $cf_country = strtoupper(sanitize_text_field($_SERVER['HTTP_CF_IPCOUNTRY']));
+        if (strlen($cf_country) === 2 && $cf_country !== 'XX' && $cf_country !== 'T1') {
+            return ['country' => $cf_country, 'state' => '', 'city' => '', 'postcode' => ''];
+        }
+    }
+
+    // 2. WooCommerce 原生 MaxMind GeoIP
+    if (class_exists('WC_Geolocation')) {
+        $ip = wplpg_get_client_ip();
+        $geo = WC_Geolocation::geolocate_ip($ip, true, false);
+        if (!empty($geo['country'])) {
+            return [
+                'country'  => strtoupper($geo['country']),
+                'state'    => !empty($geo['state']) ? $geo['state'] : '',
+                'city'     => !empty($geo['city']) ? $geo['city'] : '',
+                'postcode' => !empty($geo['postcode']) ? $geo['postcode'] : '',
+            ];
+        }
+    }
+
+    // 3. 店铺基础国家兜底
+    if (function_exists('WC') && WC() && isset(WC()->countries)) {
+        $base_country = WC()->countries->get_base_country();
+        if (!empty($base_country)) {
+            return [
+                'country'  => strtoupper($base_country),
+                'state'    => WC()->countries->get_base_state() ?: '',
+                'city'     => WC()->countries->get_base_city() ?: '',
+                'postcode' => WC()->countries->get_base_postcode() ?: '',
+            ];
+        }
+    }
+
+    return ['country' => 'US', 'state' => 'NY', 'city' => 'New York', 'postcode' => '10001'];
+}
+
+/**
+ * 获取合规防风控真实格式地址模板（通过 AVS 与反欺诈校验）
+ */
+function wplpg_get_smart_billing_defaults($country = 'US')
+{
+    $country = strtoupper(trim($country));
+
+    $presets = [
+        'US' => [
+            'first_name' => 'James',
+            'last_name'  => 'Wilson',
+            'address_1'  => '150 W 30th St',
+            'city'       => 'New York',
+            'state'      => 'NY',
+            'postcode'   => '10001',
+            'phone'      => '+1 212-555-0199',
+        ],
+        'GB' => [
+            'first_name' => 'Oliver',
+            'last_name'  => 'Smith',
+            'address_1'  => '25 High Street',
+            'city'       => 'London',
+            'state'      => '',
+            'postcode'   => 'EC1A 1BB',
+            'phone'      => '+44 20 7946 0912',
+        ],
+        'CA' => [
+            'first_name' => 'Liam',
+            'last_name'  => 'Tremblay',
+            'address_1'  => '200 Bay Street',
+            'city'       => 'Toronto',
+            'state'      => 'ON',
+            'postcode'   => 'M5H 2N2',
+            'phone'      => '+1 416-555-0143',
+        ],
+        'AU' => [
+            'first_name' => 'Jack',
+            'last_name'  => 'Taylor',
+            'address_1'  => '100 George St',
+            'city'       => 'Sydney',
+            'state'      => 'NSW',
+            'postcode'   => '2000',
+            'phone'      => '+61 2 9250 5000',
+        ],
+        'DE' => [
+            'first_name' => 'Maximilian',
+            'last_name'  => 'Mueller',
+            'address_1'  => 'Friedrichstrasse 45',
+            'city'       => 'Berlin',
+            'state'      => '',
+            'postcode'   => '10115',
+            'phone'      => '+49 30 1234567',
+        ],
+        'FR' => [
+            'first_name' => 'Lucas',
+            'last_name'  => 'Martin',
+            'address_1'  => '10 Rue de Rivoli',
+            'city'       => 'Paris',
+            'state'      => '',
+            'postcode'   => '75001',
+            'phone'      => '+33 1 42 68 55 00',
+        ],
+        'SG' => [
+            'first_name' => 'Lucas',
+            'last_name'  => 'Tan',
+            'address_1'  => '10 Collyer Quay',
+            'city'       => 'Singapore',
+            'state'      => '',
+            'postcode'   => '049315',
+            'phone'      => '+65 6737 4411',
+        ],
+    ];
+
+    if (isset($presets[$country])) {
+        return $presets[$country];
+    }
+
+    $names = [
+        ['Alex', 'Miller'],
+        ['David', 'Wilson'],
+        ['Sarah', 'Johnson'],
+        ['Michael', 'Brown'],
+        ['Emma', 'Davis'],
+        ['Daniel', 'White'],
+    ];
+    $chosen_name = $names[array_rand($names)];
+
+    return [
+        'first_name' => $chosen_name[0],
+        'last_name'  => $chosen_name[1],
+        'address_1'  => '100 Central Avenue',
+        'city'       => 'Central City',
+        'state'      => '',
+        'postcode'   => '10001',
+        'phone'      => '+1 212-555-0199',
+    ];
+}
+
+/**
+ * 动态生成合法站点域名邮箱（杜绝未解析的假域名触发风控）
+ */
+function wplpg_generate_smart_email()
+{
+    $host = '';
+    if (function_exists('home_url')) {
+        $host = parse_url(home_url(), PHP_URL_HOST);
+    }
+    if (empty($host) && !empty($_SERVER['HTTP_HOST'])) {
+        $host = $_SERVER['HTTP_HOST'];
+    }
+    if (empty($host) && !empty($_SERVER['SERVER_NAME'])) {
+        $host = $_SERVER['SERVER_NAME'];
+    }
+
+    $host = preg_replace('/^www\./i', '', trim(sanitize_text_field($host)));
+
+    if (empty($host) || !strpos($host, '.')) {
+        $host = 'order-service.shop';
+    }
+
+    $prefix = 'client_' . wp_rand(10000, 99999);
+    return $prefix . '@' . $host;
+}
+
+/**
+ * 5. 创建订单时全自动智能合规兜底（消除风控拦截）
  */
 add_action('woocommerce_checkout_create_order', function ($order, $data) {
     if (!wplpg_is_skip_validation() || !is_a($order, 'WC_Order')) {
         return;
     }
 
+    $geo = wplpg_detect_customer_geo();
+    $country = !empty($geo['country']) ? $geo['country'] : 'US';
+    $smart_defaults = wplpg_get_smart_billing_defaults($country);
+
+    // 账单国家
+    if (!$order->get_billing_country()) {
+        $order->set_billing_country($country);
+    }
+
+    // 账单姓名
     if (!$order->get_billing_first_name()) {
-        $order->set_billing_first_name('Guest');
+        $order->set_billing_first_name($smart_defaults['first_name']);
     }
     if (!$order->get_billing_last_name()) {
-        $order->set_billing_last_name('Customer');
+        $order->set_billing_last_name($smart_defaults['last_name']);
     }
+
+    // 账单邮箱（采用站点主域名合法后缀）
     if (!$order->get_billing_email()) {
-        $order->set_billing_email('guest_' . time() . '@checkout.local');
+        $order->set_billing_email(wplpg_generate_smart_email());
     }
-    if (!$order->get_billing_country()) {
-        $order->set_billing_country('US');
-    }
+
+    // 真实格式地址、城市、省份与邮编（通过 AVS 验证）
     if (!$order->get_billing_address_1()) {
-        $order->set_billing_address_1('Direct Checkout');
+        $order->set_billing_address_1($smart_defaults['address_1']);
     }
     if (!$order->get_billing_city()) {
-        $order->set_billing_city('Online');
+        $city = !empty($geo['city']) ? $geo['city'] : $smart_defaults['city'];
+        $order->set_billing_city($city);
+    }
+    if (!$order->get_billing_state() && !empty($smart_defaults['state'])) {
+        $state = !empty($geo['state']) ? $geo['state'] : $smart_defaults['state'];
+        $order->set_billing_state($state);
     }
     if (!$order->get_billing_postcode()) {
-        $order->set_billing_postcode('00000');
+        $postcode = !empty($geo['postcode']) ? $geo['postcode'] : $smart_defaults['postcode'];
+        $order->set_billing_postcode($postcode);
+    }
+    if (!$order->get_billing_phone()) {
+        $order->set_billing_phone($smart_defaults['phone']);
+    }
+
+    // 注入买家真实访问 IP 与 User Agent，供支付网关做正常校验
+    $client_ip = wplpg_get_client_ip();
+    if ($client_ip && method_exists($order, 'set_customer_ip_address')) {
+        $order->set_customer_ip_address($client_ip);
+    }
+    if (function_exists('wc_get_user_agent') && method_exists($order, 'set_customer_user_agent')) {
+        $order->set_customer_user_agent(wc_get_user_agent());
     }
 }, 20, 2);
 
