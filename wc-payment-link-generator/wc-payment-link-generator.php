@@ -3,7 +3,7 @@
 /**
  * Plugin Name: WooCommerce 付款链接生成器
  * Description: 在 WooCommerce 后台生成自定义金额付款链接，支持设置有效期限、变体产品自动补齐属性、可自主选择保留页面内容（产品信息、账单地址、页首页脚、隐私政策），支持跳过订单验证与纯净结账模式，完美兼容移动端与所有主题，支持 GitHub Releases 一键自动升级更新。
- * Version: 2.0.7
+ * Version: 2.0.8
  * Author: Wwnine
  */
 
@@ -229,7 +229,8 @@ function wplpg_create_short_link(
     $retain_products = 0,
     $retain_billing = 0,
     $retain_header_footer = 0,
-    $retain_policy = 0
+    $retain_policy = 0,
+    $allow_expired_use = 1
 ) {
     $product_id = absint($product_id);
     $product = wc_get_product($product_id);
@@ -257,6 +258,7 @@ function wplpg_create_short_link(
         'created_at'           => $now,
         'expire_at'            => $expire_at,
         'expire_secs'          => $expire_seconds,
+        'allow_expired_use'    => !empty($allow_expired_use) ? 1 : 0,
         'skip_validation'      => !empty($skip_validation) ? 1 : 0,
         'hide_details'         => !empty($hide_details) ? 1 : 0,
         'retain_products'      => !empty($retain_products) ? 1 : 0,
@@ -269,7 +271,10 @@ function wplpg_create_short_link(
     update_option('wplpg_link_' . $token, $link_payload, 'no');
 
     // 2. 内存加速 Transient 存储（辅存储），防范 Memcached/Redis 大于 30 天时间戳溢出
-    $transient_ttl = $expire_seconds > 0 ? min($expire_seconds, 2592000) : 0;
+    // 若允许过期后继续使用，Transient 长效缓存；若严格限制，则按有效期缓存
+    $transient_ttl = (!empty($allow_expired_use) || $expire_seconds <= 0)
+        ? 2592000
+        : min($expire_seconds, 2592000);
     set_transient('wplpg_short_' . $token, $link_payload, $transient_ttl);
 
     return trailingslashit(home_url()) .
@@ -424,10 +429,13 @@ function wplpg_get_link_data($token)
     if (is_array($data) && !empty($data['product_id'])) {
         // 自动回写 Transient 加速后续访问
         $expire_at = absint($data['expire_at'] ?? 0);
+        $allow_expired = !isset($data['allow_expired_use']) || !empty($data['allow_expired_use']);
         $ttl = 0;
-        if ($expire_at > 0) {
+        if ($expire_at > 0 && !$allow_expired) {
             $remaining = $expire_at - time();
             $ttl = $remaining > 0 ? min($remaining, 2592000) : 1;
+        } else {
+            $ttl = 2592000;
         }
         set_transient('wplpg_short_' . $token, $data, $ttl);
         return $data;
@@ -456,12 +464,16 @@ function wplpg_populate_cart_from_token($token)
         return new WP_Error('not_found', __('该付款链接不存在或已过期失效。', 'woocommerce'));
     }
 
-    // 校验有效期
+    // 校验有效期（支持设置过期后仍可使用模式）
     $expire_at = absint($data['expire_at'] ?? 0);
+    $allow_expired = !isset($data['allow_expired_use']) || !empty($data['allow_expired_use']);
     if ($expire_at > 0 && time() > $expire_at) {
-        delete_transient('wplpg_short_' . $token);
-        delete_option('wplpg_link_' . $token);
-        return new WP_Error('expired', __('该付款链接已超过有效时间，已失效。请联系客服重新获取。', 'woocommerce'));
+        if (!$allow_expired) {
+            delete_transient('wplpg_short_' . $token);
+            delete_option('wplpg_link_' . $token);
+            return new WP_Error('expired', __('该付款链接已超过有效时间，已失效。请联系客服重新获取。', 'woocommerce'));
+        }
+        // 允许过期后继续使用模式：不删除数据，不阻断结账，确保客户可顺利付款
     }
 
     if (!function_exists('WC')) {
@@ -1605,6 +1617,7 @@ function wplpg_ajax_create_short_link()
     $retain_billing       = !empty($_POST['retain_billing']) ? 1 : 0;
     $retain_header_footer = !empty($_POST['retain_header_footer']) ? 1 : 0;
     $retain_policy        = !empty($_POST['retain_policy']) ? 1 : 0;
+    $allow_expired_use    = !isset($_POST['allow_expired_use']) || !empty($_POST['allow_expired_use']) ? 1 : 0;
 
     $link = wplpg_create_short_link(
         $product_id,
@@ -1617,7 +1630,8 @@ function wplpg_ajax_create_short_link()
         $retain_products,
         $retain_billing,
         $retain_header_footer,
-        $retain_policy
+        $retain_policy,
+        $allow_expired_use
     );
 
     $expire_text = $expire_seconds > 0
@@ -1628,6 +1642,7 @@ function wplpg_ajax_create_short_link()
         'link'                 => $link,
         'expire_text'          => $expire_text,
         'expire_secs'          => $expire_seconds,
+        'allow_expired_use'    => $allow_expired_use,
         'skip_validation'      => $skip_validation,
         'hide_details'         => $hide_details,
         'retain_products'      => $retain_products,
@@ -2232,8 +2247,14 @@ function generate_payment_link_page()
                                     </select>
                                 </div>
                             </div>
+                            <div style="margin-top: 8px;">
+                                <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
+                                    <input type="checkbox" id="wplpg-allow-expired-use" value="1" checked style="width: 16px; height: 16px; margin: 0;">
+                                    <span><strong>过期后仍允许付款</strong>（推荐开启：即便超过有效时间，客户打开链接依然可正常结算，避免流失订单）</span>
+                                </label>
+                            </div>
                             <p class="wplpg-help">
-                                在限定时间内，用户随时打开该短链接均可正常结算，金额与商品持续有效。
+                                设定有效时间可向客户营造时效紧迫感；开启“过期后仍允许付款”后，即便客户超时回访打开链接仍能顺利成单。
                             </p>
                         </div>
 
@@ -2515,6 +2536,7 @@ function generate_payment_link_page()
             const customExpireUnit = document.getElementById('wplpg-custom-expire-unit');
             const hideDetailsCheckbox = document.getElementById('wplpg-hide-details');
             const skipValidationCheckbox = document.getElementById('wplpg-skip-validation');
+            const allowExpiredUseCheckbox = document.getElementById('wplpg-allow-expired-use');
             const retentionOptionsWrap = document.getElementById('wplpg-retention-options-wrap');
             const retainProductsCheckbox = document.getElementById('wplpg-retain-products');
             const retainBillingCheckbox = document.getElementById('wplpg-retain-billing');
@@ -2635,6 +2657,7 @@ function generate_payment_link_page()
                 const retainBilling = (hideDetails && retainBillingCheckbox && retainBillingCheckbox.checked) ? 1 : 0;
                 const retainHeaderFooter = (hideDetails && retainHeaderFooterCheckbox && retainHeaderFooterCheckbox.checked) ? 1 : 0;
                 const retainPolicy = (hideDetails && retainPolicyCheckbox && retainPolicyCheckbox.checked) ? 1 : 0;
+                const allowExpiredUse = (allowExpiredUseCheckbox && allowExpiredUseCheckbox.checked) ? 1 : 0;
 
                 if (!amount || parseFloat(amount) <= 0) {
                     showMessage('请输入有效的付款金额。', 'error');
@@ -2661,6 +2684,7 @@ function generate_payment_link_page()
                                 variation.attributes || {}
                             ),
                             expire_seconds: expireSeconds,
+                            allow_expired_use: allowExpiredUse,
                             skip_validation: skipValidation,
                             hide_details: hideDetails,
                             retain_products: retainProducts,
@@ -2678,6 +2702,7 @@ function generate_payment_link_page()
                         const expireText = response.data.expire_text || '';
                         const isHide = response.data.hide_details === 1;
                         const isSkip = response.data.skip_validation === 1;
+                        const isAllowExpired = response.data.allow_expired_use === 1;
 
                         result.hidden = false;
                         result.className = 'notice notice-success inline';
@@ -2704,7 +2729,11 @@ function generate_payment_link_page()
                         if (expireText) {
                             const expireP = document.createElement('p');
                             expireP.style.margin = '4px 0';
-                            expireP.innerHTML = '<strong>有效时间：</strong>' + escapeHtml(expireText);
+                            let expireHtml = '<strong>有效时间：</strong>' + escapeHtml(expireText);
+                            if (isAllowExpired) {
+                                expireHtml += ' <span style="color:#008a20;font-weight:600;">（已开启：过期后仍可付款）</span>';
+                            }
+                            expireP.innerHTML = expireHtml;
                             metaDiv.appendChild(expireP);
                         }
 
