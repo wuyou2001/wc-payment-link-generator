@@ -3,7 +3,7 @@
 /**
  * Plugin Name: WooCommerce 付款链接生成器
  * Description: 在 WooCommerce 后台生成自定义金额付款链接，支持设置有效期限、变体产品自动补齐属性、可自主选择保留页面内容（产品信息、账单地址、页首页脚、隐私政策），支持跳过订单验证与纯净结账模式，完美兼容移动端与所有主题，支持 GitHub Releases 一键自动升级更新。
- * Version: 2.0.8
+ * Version: 2.0.9
  * Author: Wwnine
  */
 
@@ -229,8 +229,7 @@ function wplpg_create_short_link(
     $retain_products = 0,
     $retain_billing = 0,
     $retain_header_footer = 0,
-    $retain_policy = 0,
-    $allow_expired_use = 1
+    $retain_policy = 0
 ) {
     $product_id = absint($product_id);
     $product = wc_get_product($product_id);
@@ -258,7 +257,6 @@ function wplpg_create_short_link(
         'created_at'           => $now,
         'expire_at'            => $expire_at,
         'expire_secs'          => $expire_seconds,
-        'allow_expired_use'    => !empty($allow_expired_use) ? 1 : 0,
         'skip_validation'      => !empty($skip_validation) ? 1 : 0,
         'hide_details'         => !empty($hide_details) ? 1 : 0,
         'retain_products'      => !empty($retain_products) ? 1 : 0,
@@ -267,14 +265,11 @@ function wplpg_create_short_link(
         'retain_policy'        => !empty($retain_policy) ? 1 : 0,
     ];
 
-    // 1. 物理数据库持久化存储（主存储），设置 autoload='no'，永不因 Redis/Memcached 重启或缓存清理而丢失
+    // 1. 物理数据库持久化存储（主存储），设置 autoload='no'
     update_option('wplpg_link_' . $token, $link_payload, 'no');
 
-    // 2. 内存加速 Transient 存储（辅存储），防范 Memcached/Redis 大于 30 天时间戳溢出
-    // 若允许过期后继续使用，Transient 长效缓存；若严格限制，则按有效期缓存
-    $transient_ttl = (!empty($allow_expired_use) || $expire_seconds <= 0)
-        ? 2592000
-        : min($expire_seconds, 2592000);
+    // 2. 内存加速 Transient 存储：严格等于有效期时长，超时即刻失效
+    $transient_ttl = $expire_seconds > 0 ? min($expire_seconds, 2592000) : 0;
     set_transient('wplpg_short_' . $token, $link_payload, $transient_ttl);
 
     return trailingslashit(home_url()) .
@@ -421,23 +416,36 @@ function wplpg_get_link_data($token)
     // 1. 优先从内存 Transient 读取
     $data = get_transient('wplpg_short_' . $token);
     if (is_array($data) && !empty($data['product_id'])) {
+        $expire_at = absint($data['expire_at'] ?? 0);
+        if ($expire_at > 0 && time() > $expire_at) {
+            delete_transient('wplpg_short_' . $token);
+            delete_option('wplpg_link_' . $token);
+            return false;
+        }
         return $data;
     }
 
     // 2. 核心兜底：从数据库 wp_options 物理持久化存储读取
     $data = get_option('wplpg_link_' . $token);
     if (is_array($data) && !empty($data['product_id'])) {
-        // 自动回写 Transient 加速后续访问
         $expire_at = absint($data['expire_at'] ?? 0);
-        $allow_expired = !isset($data['allow_expired_use']) || !empty($data['allow_expired_use']);
+        if ($expire_at > 0 && time() > $expire_at) {
+            delete_transient('wplpg_short_' . $token);
+            delete_option('wplpg_link_' . $token);
+            return false;
+        }
+
+        // 自动回写 Transient 加速后续访问
         $ttl = 0;
-        if ($expire_at > 0 && !$allow_expired) {
+        if ($expire_at > 0) {
             $remaining = $expire_at - time();
-            $ttl = $remaining > 0 ? min($remaining, 2592000) : 1;
+            $ttl = $remaining > 0 ? min($remaining, 2592000) : 0;
         } else {
             $ttl = 2592000;
         }
-        set_transient('wplpg_short_' . $token, $data, $ttl);
+        if ($ttl > 0) {
+            set_transient('wplpg_short_' . $token, $data, $ttl);
+        }
         return $data;
     }
 
@@ -446,7 +454,7 @@ function wplpg_get_link_data($token)
 
 /**
  * 根据 Token 为购物车填充自定义商品与金额。
- * 兼容移动端设备在 302 重定向中丢 Cookie 的情况。
+ * 严格时效保护：若链接超期，彻底拒绝加入购物车并清空会话。
  *
  * @param string $token 24位Token
  * @return bool|WP_Error
@@ -461,19 +469,21 @@ function wplpg_populate_cart_from_token($token)
     $data = wplpg_get_link_data($token);
 
     if (!is_array($data)) {
-        return new WP_Error('not_found', __('该付款链接不存在或已过期失效。', 'woocommerce'));
+        if (function_exists('WC') && WC()->cart) {
+            WC()->cart->empty_cart();
+        }
+        return new WP_Error('not_found', __('该付款链接不存在或已超过有效时间失效。', 'woocommerce'));
     }
 
-    // 校验有效期（支持设置过期后仍可使用模式）
+    // 严格校验有效期（到达即作废，禁止付款）
     $expire_at = absint($data['expire_at'] ?? 0);
-    $allow_expired = !isset($data['allow_expired_use']) || !empty($data['allow_expired_use']);
     if ($expire_at > 0 && time() > $expire_at) {
-        if (!$allow_expired) {
-            delete_transient('wplpg_short_' . $token);
-            delete_option('wplpg_link_' . $token);
-            return new WP_Error('expired', __('该付款链接已超过有效时间，已失效。请联系客服重新获取。', 'woocommerce'));
+        delete_transient('wplpg_short_' . $token);
+        delete_option('wplpg_link_' . $token);
+        if (function_exists('WC') && WC()->cart) {
+            WC()->cart->empty_cart();
         }
-        // 允许过期后继续使用模式：不删除数据，不阻断结账，确保客户可顺利付款
+        return new WP_Error('expired', __('该付款链接已超过设定的有效时间，已严格失效并关闭，禁止付款。', 'woocommerce'));
     }
 
     if (!function_exists('WC')) {
@@ -1162,17 +1172,51 @@ add_filter('woocommerce_checkout_fields', function ($fields) {
 }, 9999);
 
 /**
- * 2. 绕过结账后端非核心字段验证报错
+ * 2. 结账时严格校验付款链接时效，并可控放行非核心字段（严格禁止过期付款）
  */
 add_action('woocommerce_after_checkout_validation', function ($data, $errors) {
-    if (!wplpg_is_skip_validation() || !is_wp_error($errors)) {
+    if (!is_wp_error($errors)) {
+        return;
+    }
+
+    // 严密检查：购物车中的短链接是否已过期
+    if (function_exists('WC') && WC()->cart) {
+        foreach (WC()->cart->get_cart() as $cart_item) {
+            if (!empty($cart_item['wplpg_payment_link']) && !empty($cart_item['wplpg_token'])) {
+                $token = sanitize_key($cart_item['wplpg_token']);
+                $link_data = wplpg_get_link_data($token);
+                $is_expired = false;
+
+                if (!is_array($link_data)) {
+                    $is_expired = true;
+                } else {
+                    $expire_at = absint($link_data['expire_at'] ?? 0);
+                    if ($expire_at > 0 && time() > $expire_at) {
+                        $is_expired = true;
+                        delete_transient('wplpg_short_' . $token);
+                        delete_option('wplpg_link_' . $token);
+                    }
+                }
+
+                if ($is_expired) {
+                    $errors->add(
+                        'wplpg_link_expired',
+                        __('该付款链接已超过有效时间，已被系统自动关闭，无法提交付款。请联系客服重新获取有效链接。', 'woocommerce')
+                    );
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!wplpg_is_skip_validation()) {
         return;
     }
 
     $error_codes = $errors->get_error_codes();
     foreach ($error_codes as $code) {
-        // 过滤掉所有地址、姓名、邮编、电话、国家、条款及隐私等报错
-        if ($code !== 'payment_method_required') {
+        // 过滤掉所有地址、姓名、邮编、电话、国家、条款及隐私等报错，但【坚决保留】支付方式与过期阻断报错
+        if ($code !== 'payment_method_required' && $code !== 'wplpg_link_expired') {
             $errors->remove($code);
         }
     }
@@ -1403,10 +1447,27 @@ function wplpg_generate_smart_email()
 }
 
 /**
- * 5. 创建订单时全自动智能合规兜底（消除风控拦截）
+ * 5. 创建订单时时效终极校验与智能合规兜底（严格防范超期付款）
  */
 add_action('woocommerce_checkout_create_order', function ($order, $data) {
-    if (!wplpg_is_skip_validation() || !is_a($order, 'WC_Order')) {
+    if (!is_a($order, 'WC_Order')) {
+        return;
+    }
+
+    // 终极拦截：若购物车或会话中的短链接已过期，坚决禁止生成订单
+    if (function_exists('WC') && WC()->cart) {
+        foreach (WC()->cart->get_cart() as $cart_item) {
+            if (!empty($cart_item['wplpg_payment_link']) && !empty($cart_item['wplpg_token'])) {
+                $token = sanitize_key($cart_item['wplpg_token']);
+                $link_data = wplpg_get_link_data($token);
+                if (!is_array($link_data) || (absint($link_data['expire_at'] ?? 0) > 0 && time() > absint($link_data['expire_at']))) {
+                    throw new Exception(__('该付款链接已超过有效时间，已被系统自动关闭，禁止创建订单。', 'woocommerce'));
+                }
+            }
+        }
+    }
+
+    if (!wplpg_is_skip_validation()) {
         return;
     }
 
@@ -1617,7 +1678,6 @@ function wplpg_ajax_create_short_link()
     $retain_billing       = !empty($_POST['retain_billing']) ? 1 : 0;
     $retain_header_footer = !empty($_POST['retain_header_footer']) ? 1 : 0;
     $retain_policy        = !empty($_POST['retain_policy']) ? 1 : 0;
-    $allow_expired_use    = !isset($_POST['allow_expired_use']) || !empty($_POST['allow_expired_use']) ? 1 : 0;
 
     $link = wplpg_create_short_link(
         $product_id,
@@ -1630,19 +1690,17 @@ function wplpg_ajax_create_short_link()
         $retain_products,
         $retain_billing,
         $retain_header_footer,
-        $retain_policy,
-        $allow_expired_use
+        $retain_policy
     );
 
     $expire_text = $expire_seconds > 0
-        ? wp_date('Y-m-d H:i:s', time() + $expire_seconds) . '（' . wplpg_format_duration($expire_seconds) . '内有效）'
+        ? wp_date('Y-m-d H:i:s', time() + $expire_seconds) . '（' . wplpg_format_duration($expire_seconds) . '内有效，超时严格禁止付款）'
         : '永久有效';
 
     wp_send_json_success([
         'link'                 => $link,
         'expire_text'          => $expire_text,
         'expire_secs'          => $expire_seconds,
-        'allow_expired_use'    => $allow_expired_use,
         'skip_validation'      => $skip_validation,
         'hide_details'         => $hide_details,
         'retain_products'      => $retain_products,
@@ -1781,6 +1839,30 @@ add_filter('woocommerce_cart_item_from_session', 'wplpg_apply_custom_price', 20)
 
 add_action('woocommerce_before_calculate_totals', function ($cart) {
     if (is_admin() && !defined('DOING_AJAX')) {
+        return;
+    }
+
+    $has_expired = false;
+    foreach ($cart->get_cart() as $cart_item_key => $cart_item) {
+        if (!empty($cart_item['wplpg_payment_link']) && !empty($cart_item['wplpg_token'])) {
+            $token = sanitize_key($cart_item['wplpg_token']);
+            $link_data = wplpg_get_link_data($token);
+            if (!is_array($link_data) || (absint($link_data['expire_at'] ?? 0) > 0 && time() > absint($link_data['expire_at']))) {
+                $has_expired = true;
+                $cart->remove_cart_item($cart_item_key);
+            }
+        }
+    }
+
+    if ($has_expired) {
+        $cart->empty_cart();
+        wplpg_unset_session('custom_payment_amount');
+        wplpg_unset_session('custom_payment_product');
+        wplpg_unset_session('wplpg_payment_link');
+        wplpg_unset_session('wplpg_token');
+        if (function_exists('wc_add_notice')) {
+            wc_add_notice(__('该付款链接已超过设定的有效时间，已严格失效并关闭，禁止支付。', 'woocommerce'), 'error');
+        }
         return;
     }
 
@@ -2247,14 +2329,8 @@ function generate_payment_link_page()
                                     </select>
                                 </div>
                             </div>
-                            <div style="margin-top: 8px;">
-                                <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
-                                    <input type="checkbox" id="wplpg-allow-expired-use" value="1" checked style="width: 16px; height: 16px; margin: 0;">
-                                    <span><strong>过期后仍允许付款</strong>（推荐开启：即便超过有效时间，客户打开链接依然可正常结算，避免流失订单）</span>
-                                </label>
-                            </div>
-                            <p class="wplpg-help">
-                                设定有效时间可向客户营造时效紧迫感；开启“过期后仍允许付款”后，即便客户超时回访打开链接仍能顺利成单。
+                            <p class="wplpg-help" style="color: #b32d2e; font-size: 13px; line-height: 1.6; margin-top: 8px;">
+                                <strong>【严格时效保护】</strong>：到达设定的有效时间后，系统将自动物理注销该短链接，并在全流程（打开链接、加入购物车、刷新页面、提交订单）强制阻断并严禁付款。
                             </p>
                         </div>
 
@@ -2536,7 +2612,6 @@ function generate_payment_link_page()
             const customExpireUnit = document.getElementById('wplpg-custom-expire-unit');
             const hideDetailsCheckbox = document.getElementById('wplpg-hide-details');
             const skipValidationCheckbox = document.getElementById('wplpg-skip-validation');
-            const allowExpiredUseCheckbox = document.getElementById('wplpg-allow-expired-use');
             const retentionOptionsWrap = document.getElementById('wplpg-retention-options-wrap');
             const retainProductsCheckbox = document.getElementById('wplpg-retain-products');
             const retainBillingCheckbox = document.getElementById('wplpg-retain-billing');
@@ -2657,7 +2732,6 @@ function generate_payment_link_page()
                 const retainBilling = (hideDetails && retainBillingCheckbox && retainBillingCheckbox.checked) ? 1 : 0;
                 const retainHeaderFooter = (hideDetails && retainHeaderFooterCheckbox && retainHeaderFooterCheckbox.checked) ? 1 : 0;
                 const retainPolicy = (hideDetails && retainPolicyCheckbox && retainPolicyCheckbox.checked) ? 1 : 0;
-                const allowExpiredUse = (allowExpiredUseCheckbox && allowExpiredUseCheckbox.checked) ? 1 : 0;
 
                 if (!amount || parseFloat(amount) <= 0) {
                     showMessage('请输入有效的付款金额。', 'error');
@@ -2684,7 +2758,6 @@ function generate_payment_link_page()
                                 variation.attributes || {}
                             ),
                             expire_seconds: expireSeconds,
-                            allow_expired_use: allowExpiredUse,
                             skip_validation: skipValidation,
                             hide_details: hideDetails,
                             retain_products: retainProducts,
@@ -2702,7 +2775,6 @@ function generate_payment_link_page()
                         const expireText = response.data.expire_text || '';
                         const isHide = response.data.hide_details === 1;
                         const isSkip = response.data.skip_validation === 1;
-                        const isAllowExpired = response.data.allow_expired_use === 1;
 
                         result.hidden = false;
                         result.className = 'notice notice-success inline';
@@ -2729,11 +2801,7 @@ function generate_payment_link_page()
                         if (expireText) {
                             const expireP = document.createElement('p');
                             expireP.style.margin = '4px 0';
-                            let expireHtml = '<strong>有效时间：</strong>' + escapeHtml(expireText);
-                            if (isAllowExpired) {
-                                expireHtml += ' <span style="color:#008a20;font-weight:600;">（已开启：过期后仍可付款）</span>';
-                            }
-                            expireP.innerHTML = expireHtml;
+                            expireP.innerHTML = '<strong>有效时间：</strong>' + escapeHtml(expireText);
                             metaDiv.appendChild(expireP);
                         }
 

@@ -1,15 +1,15 @@
 {
-  "version": "2.0.8",
-  "tag_name": "v2.0.8",
-  "name": "Release v2.0.8",
-  "body": "支持设置支付链接有效时间过期后仍可使用",
-  "published_at": "2026-11-19T06:05:08Z",
-  "download_url": "https://github.com/wuyou2001/wc-payment-link-generator/releases/download/v2.0.8/wc-payment-link-generator.zip",
-  "zipball_url": "https://raw.githubusercontent.com/wuyou2001/wc-payment-link-generator/v2.0.8/wc-payment-link-generator.zip",
+  "version": "2.0.9",
+  "tag_name": "v2.0.9",
+  "name": "Release v2.0.9",
+  "body": "严格禁止支付链接超过有效时间后付款",
+  "published_at": "2026-11-19T06:15:42Z",
+  "download_url": "https://github.com/wuyou2001/wc-payment-link-generator/releases/download/v2.0.9/wc-payment-link-generator.zip",
+  "zipball_url": "https://raw.githubusercontent.com/wuyou2001/wc-payment-link-generator/v2.0.9/wc-payment-link-generator.zip",
   "assets": [
     {
       "name": "wc-payment-link-generator.zip",
-      "browser_download_url": "https://github.com/wuyou2001/wc-payment-link-generator/releases/download/v2.0.8/wc-payment-link-generator.zip"
+      "browser_download_url": "https://github.com/wuyou2001/wc-payment-link-generator/releases/download/v2.0.9/wc-payment-link-generator.zip"
     }
   ]
 }
